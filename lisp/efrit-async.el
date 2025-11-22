@@ -33,8 +33,9 @@
 (declare-function efrit-do-todo-item-content "efrit-do")
 (declare-function efrit-do-todo-item-status "efrit-do")
 (declare-function efrit-do-todo-item-priority "efrit-do")
+(declare-function efrit-do--get-model "efrit-do")
 (defvar efrit-do--tools-schema)
-(defvar efrit-default-model)  ; From efrit-config
+(defvar efrit-default-model)  ; From efrit-config (fallback)
 
 (defvar efrit-async--active-session nil
   "Currently active session.")
@@ -527,12 +528,16 @@ TOOL-ITEM is the tool_use object from Claude's response."
 (defun efrit-async--continue-session (session callback)
   "Continue a multi-step SESSION by calling Claude again.
 CALLBACK is the original completion callback."
+  (require 'efrit-do)
   (let* ((session-id (efrit-session-id session))
          (work-log (efrit-session--compress-log session))
          (original-command (efrit-session-command session))
          (system-prompt (efrit-async--build-system-prompt session-id work-log))
+         (model (if (fboundp 'efrit-do--get-model)
+                    (efrit-do--get-model)
+                  efrit-default-model))
          (request-data
-          `(("model" . ,efrit-default-model)
+          `(("model" . ,model)
             ("max_tokens" . 8192)
             ("temperature" . 0.0)
             ("messages" . [(("role" . "user")
@@ -599,8 +604,11 @@ This is the async version of efrit-do's command execution."
           (efrit-progress-start-session session-id command)
           
           (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
+                 (model (if (fboundp 'efrit-do--get-model)
+                            (efrit-do--get-model)
+                          efrit-default-model))
              (request-data
-              `(("model" . ,efrit-default-model)
+              `(("model" . ,model)
                 ("max_tokens" . 8192)
                 ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")

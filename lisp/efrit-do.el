@@ -1749,9 +1749,13 @@ Handles both Anthropic and OpenRouter (OpenAI) response formats."
          (message-text ""))
     (when (and choices (> (length choices) 0))
       (let* ((choice (aref choices 0))
+             (finish-reason (gethash "finish_reason" choice))
              (message (gethash "message" choice))
              (content (gethash "content" message))
              (tool-calls (gethash "tool_calls" message)))
+        
+        ;; Log finish reason for debugging
+        (efrit-log 'debug "OpenRouter finish_reason: %s" finish-reason)
         
         ;; Handle text content
         (when content
