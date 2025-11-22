@@ -289,10 +289,11 @@ CALLBACK is called with the parsed response or error information."
              (url-request-data (encode-coding-string escaped-json 'utf-8))
              (url-request-method "POST")
              (url-request-extra-headers (efrit-common-build-headers api-key))
+             (api-url (efrit-common-get-api-url))
              (start-time (float-time)))
         
         (url-retrieve
-         (efrit-common-get-api-url)
+         api-url
          (lambda (status)
            (let ((elapsed (- (float-time) start-time)))
              (efrit-performance-record-api-time elapsed)

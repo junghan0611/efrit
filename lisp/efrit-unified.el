@@ -70,11 +70,11 @@ Returns \\='sync or \\='async based on Claude's analysis."
                            ("tools" . [,efrit-unified--mode-decision-tool])))
              (json-data (efrit-common-escape-json-unicode 
                         (json-encode request-data)))
+             (api-url (efrit-common-get-api-url))
              (url-request-method "POST")
              (url-request-extra-headers (efrit-common-build-headers api-key))
              (url-request-data json-data)
-             (response-buffer (url-retrieve-synchronously
-                              (efrit-common-get-api-url) nil t 5))
+             (response-buffer (url-retrieve-synchronously api-url nil t 5))
              response-data)
         
         (when response-buffer

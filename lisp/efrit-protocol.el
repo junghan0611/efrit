@@ -107,14 +107,14 @@ Returns the parsed response data."
     ;; Make the request
     (let* ((json-data (efrit-common-escape-json-unicode 
                       (json-encode request-data)))
+           (api-url (efrit-common-get-api-url))
            ;; These variables are used implicitly by url-retrieve-synchronously
            (url-request-method "POST")
            (url-request-extra-headers (efrit-common-build-headers api-key))
            (url-request-data json-data)
            ;; Suppress unused variable warnings
            (_ (list url-request-method url-request-extra-headers url-request-data))
-           (response-buffer (url-retrieve-synchronously
-                            (efrit-common-get-api-url) nil t)))
+           (response-buffer (url-retrieve-synchronously api-url nil t)))
       
       (unless response-buffer
         (error "Failed to get response from API"))

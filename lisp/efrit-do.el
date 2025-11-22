@@ -108,8 +108,16 @@ Recommended to keep enabled for safety."
   :type 'boolean
   :group 'efrit-do)
 
-(defcustom efrit-model "claude-3-5-sonnet-20241022"
-  "Claude model to use for efrit-do commands."
+(defcustom efrit-model "claude-sonnet-4-20250514"
+  "Model to use for efrit-do commands.
+For Anthropic: claude-sonnet-4-20250514, claude-3-5-sonnet-20241022
+For OpenRouter: anthropic/claude-sonnet-4, anthropic/claude-3.5-sonnet"
+  :type 'string
+  :group 'efrit-do)
+
+(defcustom efrit-model-openrouter "anthropic/claude-sonnet-4"
+  "OpenRouter model identifier.
+Used when `efrit-api-backend' is set to `openrouter'."
   :type 'string
   :group 'efrit-do)
 
@@ -131,6 +139,50 @@ When nil, uses the centralized configuration."
   :type '(choice (const :tag "Use centralized config" nil)
                  (string :tag "Legacy URL override"))
   :group 'efrit-do)
+
+;;; OpenRouter/Backend Support Functions
+
+(defun efrit-do--get-model ()
+  "Get the model name based on current backend."
+  (if (eq efrit-api-backend 'openrouter)
+      efrit-model-openrouter
+    efrit-model))
+
+(defun efrit-do--get-api-url ()
+  "Get the API URL based on current backend."
+  (or efrit-api-url (efrit-common-get-api-url)))
+
+(defun efrit-do--build-request-data (model system-prompt user-message)
+  "Build request data for MODEL with SYSTEM-PROMPT and USER-MESSAGE.
+Format differs based on `efrit-api-backend'."
+  (if (eq efrit-api-backend 'openrouter)
+      ;; OpenRouter format (OpenAI-compatible)
+      `(("model" . ,model)
+        ("max_tokens" . ,efrit-max-tokens)
+        ("temperature" . 0.0)
+        ("messages" . [(("role" . "system")
+                        ("content" . ,system-prompt))
+                       (("role" . "user")
+                        ("content" . ,user-message))])
+        ("tools" . ,(efrit-do--convert-tools-for-openrouter)))
+    ;; Anthropic format (default)
+    `(("model" . ,model)
+      ("max_tokens" . ,efrit-max-tokens)
+      ("temperature" . 0.0)
+      ("messages" . [(("role" . "user")
+                      ("content" . ,user-message))])
+      ("system" . ,system-prompt)
+      ("tools" . ,(efrit-do--get-current-tools-schema)))))
+
+(defun efrit-do--convert-tools-for-openrouter ()
+  "Convert Anthropic tool schema to OpenRouter/OpenAI format."
+  (let ((anthropic-tools (efrit-do--get-current-tools-schema)))
+    (mapcar (lambda (tool)
+              `(("type" . "function")
+                ("function" . (("name" . ,(cdr (assoc "name" tool)))
+                              ("description" . ,(cdr (assoc "description" tool)))
+                              ("parameters" . ,(cdr (assoc "input_schema" tool)))))))
+            (append anthropic-tools nil))))
 
 ;;; Internal variables
 
@@ -1619,24 +1671,18 @@ Uses improved error handling. If RETRY-COUNT is provided, this is a retry
 attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
   (condition-case api-err
       (let* ((api-key (efrit-common-get-api-key))
+             (api-url (efrit-do--get-api-url))
+             (model (efrit-do--get-model))
              (url-request-method "POST")
              (url-request-extra-headers (efrit--build-headers api-key))
              (system-prompt (efrit-do--command-system-prompt retry-count error-msg previous-code))
-             (request-data
-              `(("model" . ,efrit-model)
-                ("max_tokens" . ,efrit-max-tokens)
-                ("temperature" . 0.0)
-                ("messages" . [(("role" . "user")
-                               ("content" . ,command))])
-                ("system" . ,system-prompt)
-                ("tools" . ,(efrit-do--get-current-tools-schema))))
+             (request-data (efrit-do--build-request-data model system-prompt command))
              (json-string (json-encode request-data))
              ;; Convert unicode characters to JSON escape sequences to prevent multibyte HTTP errors
               (escaped-json (efrit-common-escape-json-unicode json-string))
               (url-request-data (encode-coding-string escaped-json 'utf-8)))
         
-        (if-let* ((api-url (or efrit-api-url (efrit-common-get-api-url)))
-                  (response-buffer (url-retrieve-synchronously api-url))
+        (if-let* ((response-buffer (url-retrieve-synchronously api-url))
                   (response-text (efrit-do--extract-response-text response-buffer)))
             (efrit-do--process-api-response response-text)
           (error "Failed to get response from API")))
@@ -1644,7 +1690,8 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
      (format "API error: %s" (error-message-string api-err)))))
 
 (defun efrit-do--process-api-response (response-text)
-  "Process API RESPONSE-TEXT and execute any tools."
+  "Process API RESPONSE-TEXT and execute any tools.
+Handles both Anthropic and OpenRouter (OpenAI) response formats."
   (condition-case json-err
       (let* ((json-object-type 'hash-table)
              (json-array-type 'vector)
@@ -1657,34 +1704,75 @@ attempt with ERROR-MSG and PREVIOUS-CODE from the failed attempt."
         
         ;; Check for API errors first
         (if-let* ((error-obj (gethash "error" response)))
-            (let ((error-type (gethash "type" error-obj))
-                  (error-message (gethash "message" error-obj)))
+            (let ((error-type (or (gethash "type" error-obj) "unknown"))
+                  (error-message (or (gethash "message" error-obj) 
+                                    (format "%s" error-obj))))
               (format "API Error (%s): %s" error-type error-message))
           
-          ;; Process successful response
-          (let ((content (gethash "content" response)))
-            (when efrit-do-debug
-              (message "API Response content: %S" content))
-            
-            (when content
-              (dotimes (i (length content))
-                (let* ((item (aref content i))
-                       (type (gethash "type" item)))
-                  (cond
-                   ;; Handle text content
-                   ((string= type "text")
-                    (when-let* ((text (gethash "text" item)))
-                      (setq message-text (concat message-text text))))
-                   
-                   ;; Handle tool use
-                   ((string= type "tool_use")
-                    (setq message-text 
-                          (concat message-text 
-                                  (efrit-do--execute-tool item))))))))
-            
-            (or message-text "Command executed"))))
+          ;; Detect response format and process accordingly
+          (if (eq efrit-api-backend 'openrouter)
+              ;; OpenRouter/OpenAI format
+              (efrit-do--process-openrouter-response response)
+            ;; Anthropic format (default)
+            (efrit-do--process-anthropic-response response))))
     (error
      (format "JSON parsing error: %s" (error-message-string json-err)))))
+
+(defun efrit-do--process-anthropic-response (response)
+  "Process Anthropic format RESPONSE."
+  (let ((content (gethash "content" response))
+        (message-text ""))
+    (when efrit-do-debug
+      (message "API Response content: %S" content))
+    
+    (when content
+      (dotimes (i (length content))
+        (let* ((item (aref content i))
+               (type (gethash "type" item)))
+          (cond
+           ;; Handle text content
+           ((string= type "text")
+            (when-let* ((text (gethash "text" item)))
+              (setq message-text (concat message-text text))))
+           
+           ;; Handle tool use
+           ((string= type "tool_use")
+            (setq message-text 
+                  (concat message-text 
+                          (efrit-do--execute-tool item))))))))
+    
+    (or message-text "Command executed")))
+
+(defun efrit-do--process-openrouter-response (response)
+  "Process OpenRouter/OpenAI format RESPONSE."
+  (let* ((choices (gethash "choices" response))
+         (message-text ""))
+    (when (and choices (> (length choices) 0))
+      (let* ((choice (aref choices 0))
+             (message (gethash "message" choice))
+             (content (gethash "content" message))
+             (tool-calls (gethash "tool_calls" message)))
+        
+        ;; Handle text content
+        (when content
+          (setq message-text content))
+        
+        ;; Handle tool calls
+        (when tool-calls
+          (dotimes (i (length tool-calls))
+            (let* ((tool-call (aref tool-calls i))
+                   (function (gethash "function" tool-call))
+                   (name (gethash "name" function))
+                   (arguments (gethash "arguments" function)))
+              ;; Convert to Anthropic-style tool item for execution
+              (let ((tool-item (make-hash-table :test 'equal)))
+                (puthash "name" name tool-item)
+                (puthash "input" (json-read-from-string arguments) tool-item)
+                (setq message-text 
+                      (concat message-text 
+                              (efrit-do--execute-tool tool-item)))))))))
+    
+    (or message-text "Command executed")))
 
 (defun efrit-do--execute-with-retry (command)
   "Execute COMMAND with retry logic if enabled.

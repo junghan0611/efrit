@@ -27,12 +27,20 @@
 
 ;;; API Configuration
 
+(defcustom efrit-api-backend 'anthropic
+  "API backend to use for Efrit.
+- `anthropic': Direct Anthropic API (default)
+- `openrouter': OpenRouter API (supports multiple models)"
+  :type '(choice (const :tag "Anthropic (Direct)" anthropic)
+                 (const :tag "OpenRouter" openrouter))
+  :group 'efrit)
+
 (defcustom efrit-api-key nil
-  "Anthropic API key for Efrit.
+  "API key for Efrit.
 This can be:
 - nil: Use auth-source lookup (recommended)
 - A string: The API key directly (not recommended for security)
-- A symbol naming an environment variable (e.g. \\='ANTHROPIC_API_KEY)
+- A symbol naming an environment variable (e.g. \\='ANTHROPIC_API_KEY or \\='OPENROUTER_API_KEY)
 - A function that returns the API key"
   :type '(choice (const :tag "Use auth-source" nil)
                  (string :tag "API key string")
@@ -51,7 +59,8 @@ Useful for corporate proxies or alternative API endpoints."
   :group 'efrit)
 
 (defcustom efrit-api-auth-source-host "api.anthropic.com"
-  "Host to use for auth-source lookup of API key."
+  "Host to use for auth-source lookup of API key.
+For OpenRouter, set to `openrouter.ai'."
   :type 'string
   :group 'efrit)
 
@@ -60,14 +69,28 @@ Useful for corporate proxies or alternative API endpoints."
   :type 'string
   :group 'efrit)
 
+(defcustom efrit-openrouter-site-url "https://github.com/junghan0611/efrit-ko"
+  "Site URL for OpenRouter HTTP-Referer header."
+  :type 'string
+  :group 'efrit)
+
+(defcustom efrit-openrouter-site-name "Efrit-KO"
+  "Site name for OpenRouter X-Title header."
+  :type 'string
+  :group 'efrit)
+
 (defun efrit-common--validate-api-key (key)
-  "Validate that KEY looks like a valid Anthropic API key.
-Returns t if valid, signals error if not."
+  "Validate that KEY looks like a valid API key.
+Returns t if valid, signals error if not.
+Supports both Anthropic (sk-ant-*) and OpenRouter (sk-or-*) key formats."
   (when (or (not (stringp key))
             (string-empty-p key)
-            (< (length key) 20)
-            (not (string-prefix-p "sk-" key)))
-    (error "Invalid API key format. Anthropic keys should start with 'sk-' and be at least 20 characters"))
+            (< (length key) 20))
+    (error "Invalid API key format: key must be at least 20 characters"))
+  ;; Accept both Anthropic and OpenRouter key formats
+  (unless (or (string-prefix-p "sk-" key)  ; Anthropic keys
+              (string-match-p "^sk-or-" key))  ; OpenRouter keys
+    (message "Warning: API key doesn't match known formats (sk-ant-* or sk-or-*)"))
   t)
 
 (defun efrit-common--sanitize-key-for-logging (key)
@@ -126,76 +149,104 @@ Ensures the result stays within DIRECTORY."
     candidate))
 
 (defun efrit-common-get-api-key ()
-  "Get the Anthropic API key using secure BYOK system.
+  "Get the API key using secure BYOK system.
 Tries in order:
 1. `efrit-api-key' if set (direct string, env var, or function)
-2. Environment variable ANTHROPIC_API_KEY
+2. Environment variable (OPENROUTER_API_KEY or ANTHROPIC_API_KEY based on backend)
 3. Auth-source lookup using configured host and user
 Validates key format and throws error if not found."
-  (let ((key (cond
-              ;; Direct string API key (NOT recommended for security)
-              ((stringp efrit-api-key)
-               (when efrit-api-key ; Log security warning
-                 (message "⚠️  WARNING: API key stored directly in variable (security risk)"))
-               efrit-api-key)
-              
-              ;; Symbol naming an environment variable (recommended)
-              ((and (symbolp efrit-api-key) efrit-api-key)
-               (or (getenv (symbol-name efrit-api-key))
-                   (error "Environment variable %s not set" efrit-api-key)))
-              
-              ;; Function that returns API key (advanced)
-              ((functionp efrit-api-key)
-               (or (funcall efrit-api-key)
-                   (error "API key function returned nil")))
-              
-              ;; Try ANTHROPIC_API_KEY environment variable (fallback)
-              ((getenv "ANTHROPIC_API_KEY"))
-              
-              ;; Fall back to auth-source (most secure)
-              (t
-               (let* ((auth-info (car (auth-source-search :host efrit-api-auth-source-host
-                                                          :user efrit-api-auth-source-user
-                                                          :require '(:secret))))
-                      (secret (when auth-info (plist-get auth-info :secret))))
-                 (if (and secret (functionp secret))
-                     (funcall secret)
-                   (error "No API key found. Try one of:
-1. Set ANTHROPIC_API_KEY environment variable (recommended)
+  (let* ((env-var (if (eq efrit-api-backend 'openrouter)
+                      "OPENROUTER_API_KEY"
+                    "ANTHROPIC_API_KEY"))
+         (key (cond
+               ;; Direct string API key (NOT recommended for security)
+               ((stringp efrit-api-key)
+                (when efrit-api-key
+                  (message "Warning: API key stored directly in variable (security risk)"))
+                efrit-api-key)
+               
+               ;; Symbol naming an environment variable (recommended)
+               ((and (symbolp efrit-api-key) efrit-api-key)
+                (or (getenv (symbol-name efrit-api-key))
+                    (error "Environment variable %s not set" efrit-api-key)))
+               
+               ;; Function that returns API key (advanced)
+               ((functionp efrit-api-key)
+                (or (funcall efrit-api-key)
+                    (error "API key function returned nil")))
+               
+               ;; Try backend-specific environment variable (fallback)
+               ((getenv env-var))
+               
+               ;; Fall back to auth-source (most secure)
+               (t
+                (let* ((auth-info (car (auth-source-search :host efrit-api-auth-source-host
+                                                           :user efrit-api-auth-source-user
+                                                           :require '(:secret))))
+                       (secret (when auth-info (plist-get auth-info :secret))))
+                  (if (and secret (functionp secret))
+                      (funcall secret)
+                    (error "No API key found. Try one of:
+1. Set %s environment variable (recommended)
 2. Add to ~/.authinfo: machine %s login %s password YOUR_KEY (most secure)
 3. Set efrit-api-key variable (NOT recommended for security)"
-                          efrit-api-auth-source-host efrit-api-auth-source-user)))))))
+                           env-var efrit-api-auth-source-host efrit-api-auth-source-user)))))))
     
     ;; Validate the key format and return it
     (when key
       (efrit-common--validate-api-key key)
       key)))
 
-(defun efrit-common-get-base-url ()
-  "Get the configured base URL for API endpoints.
-Handles both static strings and dynamic functions."
-  (cond
-   ((stringp efrit-api-base-url) efrit-api-base-url)
-   ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
-   (t "https://api.anthropic.com")))
-
-(defun efrit-common-get-api-url ()
-  "Get the full API URL for messages endpoint."
-  (concat (efrit-common-get-base-url) "/v1/messages"))
+(defconst efrit-common-openrouter-api-url "https://openrouter.ai/api/v1/chat/completions"
+  "OpenRouter API endpoint.")
 
 (defconst efrit-common-api-version "2023-06-01" 
-  "Anthropic API version for all requests.")
+  "Anthropic API version for requests.")
+
+(defun efrit-common-get-base-url ()
+  "Get the configured base URL for API endpoints.
+Handles both static strings and dynamic functions.
+For OpenRouter, returns the OpenRouter base URL."
+  (if (eq efrit-api-backend 'openrouter)
+      "https://openrouter.ai/api"
+    (cond
+     ((stringp efrit-api-base-url) efrit-api-base-url)
+     ((functionp efrit-api-base-url) (funcall efrit-api-base-url))
+     (t "https://api.anthropic.com"))))
+
+(defun efrit-common-get-api-url ()
+  "Get the full API URL for messages endpoint.
+For Anthropic: {base-url}/v1/messages
+For OpenRouter: {base-url}/v1/chat/completions"
+  (if (eq efrit-api-backend 'openrouter)
+      efrit-common-openrouter-api-url
+    (concat (efrit-common-get-base-url) "/v1/messages")))
+
+;; For backward compatibility
+(defvar efrit-common-api-url nil
+  "Deprecated: Use `efrit-common-get-api-url' instead.")
+
+(make-obsolete-variable 'efrit-common-api-url 
+                        'efrit-common-get-api-url "0.4.0")
 
 (defun efrit-common-build-headers (api-key)
-  "Build standard HTTP headers using API-KEY with security validation."
+  "Build standard HTTP headers using API-KEY with security validation.
+Headers differ based on `efrit-api-backend' setting."
   ;; Validate the API key before using it
   (efrit-common--validate-api-key api-key)
   
-  ;; Build headers (API key will not be logged due to validation above)
-  `(("Content-Type" . "application/json")
-    ("anthropic-version" . ,efrit-common-api-version)
-    ("x-api-key" . ,api-key)
-    ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15")))
+  ;; Build headers based on backend
+  (if (eq efrit-api-backend 'openrouter)
+      ;; OpenRouter headers
+      `(("Content-Type" . "application/json")
+        ("Authorization" . ,(concat "Bearer " api-key))
+        ("HTTP-Referer" . ,efrit-openrouter-site-url)
+        ("X-Title" . ,efrit-openrouter-site-name))
+    ;; Anthropic headers (default)
+    `(("Content-Type" . "application/json")
+      ("anthropic-version" . ,efrit-common-api-version)
+      ("x-api-key" . ,api-key)
+      ("anthropic-beta" . "max-tokens-3-5-sonnet-2024-07-15"))))
 
 ;;; Error Handling
 
