@@ -78,9 +78,12 @@ export async function createDelayedResponse(
   response: any,
   delayMs: number
 ): Promise<void> {
-  setTimeout(async () => {
-    await writeMockResponse(responsesDir, requestId, response);
-  }, delayMs);
+  return new Promise<void>((resolve) => {
+    setTimeout(async () => {
+      await writeMockResponse(responsesDir, requestId, response);
+      resolve();
+    }, delayMs);
+  });
 }
 
 /**
@@ -111,7 +114,8 @@ export async function assertFileNotExists(filepath: string): Promise<void> {
     await fs.access(filepath);
     throw new Error(`Expected file to not exist: ${filepath}`);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+    // Use duck-typing instead of instanceof for Jest/ESM compatibility
+    if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'ENOENT') {
       return; // File doesn't exist as expected
     }
     throw error;
@@ -163,13 +167,35 @@ export async function waitFor(
   intervalMs: number = 100
 ): Promise<void> {
   const startTime = Date.now();
-  
+
   while (Date.now() - startTime < timeoutMs) {
     if (await condition()) {
       return;
     }
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
-  
+
   throw new Error(`Condition not met within ${timeoutMs}ms`);
+}
+
+/**
+ * Wait for request files to appear and return the first request ID
+ */
+export async function waitForRequestFile(requestsDir: string, timeoutMs: number = 5000): Promise<string> {
+  let files: string[] = [];
+
+  // Give the event loop a chance to run before we start polling
+  await new Promise(resolve => setImmediate(resolve));
+
+  await waitFor(async () => {
+    files = await fs.readdir(requestsDir);
+    const requestFiles = files.filter((f: string) => f.startsWith('req_') && f.endsWith('.json'));
+    return requestFiles.length > 0;
+  }, timeoutMs);
+
+  const requestFiles = files.filter((f: string) => f.startsWith('req_') && f.endsWith('.json'));
+  if (requestFiles.length === 0) {
+    throw new Error(`No request files found in ${requestsDir} after waiting ${timeoutMs}ms`);
+  }
+  return requestFiles[0]!.replace('req_', '').replace('.json', '');
 }

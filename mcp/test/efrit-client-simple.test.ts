@@ -5,6 +5,7 @@
 import * as path from 'path';
 import { EfritClient } from '../src/efrit-client';
 import { InstanceConfig, EFRIT_SCHEMA_VERSION } from '../src/types';
+import * as setup from './setup';
 import {
   createTempDir,
   cleanupTempDir,
@@ -21,14 +22,14 @@ describe('EfritClient - Simple Tests', () => {
   beforeEach(async () => {
     tempDir = await createTempDir();
     queueStructure = await createQueueStructure(tempDir);
-    
+
     config = {
       queue_dir: queueStructure.queueDir,
       workspace_dir: path.join(tempDir, 'workspace'),
-      timeout: 1, // Short timeout for tests
+      timeout: 10, // 10 second timeout to allow for test operations
       daemon_name: 'efrit-test'
     };
-    
+
     client = new EfritClient('test-instance', config, [tempDir]);
   });
 
@@ -53,25 +54,16 @@ describe('EfritClient - Simple Tests', () => {
   });
 
   test('should write request file correctly', async () => {
-    // Start execution (will timeout but that's okay)
     const executePromise = client.execute('command', 'test');
-    
-    // Wait a bit for file to be written
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Check request file exists
-    const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-    const requestFiles = files.filter((f: string) => f.startsWith('req_') && f.endsWith('.json'));
-    expect(requestFiles.length).toBeGreaterThan(0);
-    
-    // Read and validate request
-    const requestId = requestFiles[0].replace('req_', '').replace('.json', '');
+
+    // Wait for request file to be written
+    const requestId = await setup.waitForRequestFile(queueStructure.requestsDir);
     const content = await require('fs/promises').readFile(
-      path.join(queueStructure.requestsDir, requestFiles[0]), 
+      path.join(queueStructure.requestsDir, `req_${requestId}.json`),
       'utf-8'
     );
     const request = JSON.parse(content);
-    
+
     expect(request).toMatchObject({
       id: requestId,
       version: EFRIT_SCHEMA_VERSION,
@@ -79,24 +71,26 @@ describe('EfritClient - Simple Tests', () => {
       content: 'test',
       instance_id: 'test-instance'
     });
-    
-    // Clean up the promise (it will timeout)
-    try {
-      await executePromise;
-    } catch (error) {
-      // Expected timeout
-    }
+
+    // Provide mock response to prevent timeout and request file deletion
+    await writeMockResponse(queueStructure.responsesDir, requestId, {
+      id: requestId,
+      version: EFRIT_SCHEMA_VERSION,
+      status: 'success',
+      result: 'test result',
+      timestamp: new Date().toISOString()
+    });
+
+    // Execute should complete successfully now
+    const response = await executePromise;
+    expect(response.status).toBe('success');
   });
 
   test('should handle response correctly when provided', async () => {
     const executePromise = client.execute('eval', '(+ 1 1)');
-    
-    // Wait for request file
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Get request ID
-    const files = await require('fs/promises').readdir(queueStructure.requestsDir);
-    const requestId = files[0].replace('req_', '').replace('.json', '');
+
+    // Wait for request file and get request ID
+    const requestId = await setup.waitForRequestFile(queueStructure.requestsDir);
     
     // Create response immediately
     await writeMockResponse(queueStructure.responsesDir, requestId, {

@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'fs/promises';
+import { realpathSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
@@ -44,29 +45,57 @@ export class EfritClient {
   /**
    * Sanitize and expand tilde in file paths with security validation
    * Oracle recommendation: prevent path traversal, validate against whitelist
+   *
+   * Note: Uses fs.realpathSync.native() to resolve symlinks for accurate path comparison.
+   * On macOS, /var is a symlink to /private/var, so path.resolve() alone is insufficient.
    */
   private expandUser(filepath: string): string {
     // Security validation: prevent path traversal
     if (filepath.includes('..') || filepath.includes('\0')) {
       throw this.createError('INVALID_PATH', `Invalid file path detected: ${filepath}`);
     }
-    
+
     // Expand tilde using regex
     const expanded = filepath.replace(/^~(?=$|[/\\])/, os.homedir());
     const resolved = path.resolve(expanded);
-    
+
+    // Resolve symlinks by finding the nearest existing parent and resolving from there
+    // This handles cases where the path doesn't exist yet but parent directories do
+    let realPath = resolved;
+    let testPath = resolved;
+    const pathParts: string[] = [];
+
+    while (testPath !== path.dirname(testPath)) {
+      try {
+        const realParent = realpathSync.native(testPath);
+        realPath = pathParts.length > 0
+          ? path.join(realParent, ...pathParts.reverse())
+          : realParent;
+        break;
+      } catch (error) {
+        pathParts.push(path.basename(testPath));
+        testPath = path.dirname(testPath);
+      }
+    }
+
     // Validate against allowed roots (Oracle security recommendation)
+    // Resolve symlinks in allowed roots for accurate comparison
     const isAllowed = this.allowedRoots.some(root => {
       const expandedRoot = root.replace(/^~(?=$|[/\\])/, os.homedir());
-      const resolvedRoot = path.resolve(expandedRoot);
-      return resolved.startsWith(resolvedRoot);
+      let resolvedRoot: string;
+      try {
+        resolvedRoot = realpathSync.native(expandedRoot);
+      } catch {
+        resolvedRoot = path.resolve(expandedRoot);
+      }
+      return realPath.startsWith(resolvedRoot);
     });
-    
+
     if (!isAllowed) {
-      throw this.createError('PATH_NOT_ALLOWED', 
-        `Path ${resolved} is not within allowed roots: ${this.allowedRoots.join(', ')}`);
+      throw this.createError('PATH_NOT_ALLOWED',
+        `Path ${realPath} is not within allowed roots: ${this.allowedRoots.join(', ')}`);
     }
-    
+
     return resolved;
   }
 
@@ -195,14 +224,16 @@ export class EfritClient {
         return response;
       } catch (error) {
         // If file doesn't exist yet, continue polling
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        // Note: Use duck-typing instead of instanceof check because Jest/ESM
+        // environment can have multiple Error classes from different contexts
+        if (error && typeof error === 'object' && 'code' in error && (error as any).code === 'ENOENT') {
           await new Promise(resolve => setTimeout(resolve, pollInterval));
-          
+
           // Exponential backoff (Oracle recommendation)
-          pollInterval = Math.min(pollInterval * 1.1, maxInterval);
+          pollInterval = Math.min(pollInterval * 2.0, maxInterval);
           continue;
         }
-        
+
         // Other errors are thrown immediately
         throw error;
       }
@@ -247,18 +278,27 @@ export class EfritClient {
       }
     };
     
+    let requestFile: string | undefined;
     try {
-      await this.writeRequest(request);
+      requestFile = await this.writeRequest(request);
       const response = await this.pollForResponse(requestId, timeout);
-      
+
       // Validate response ID matches request
       if (response.id !== requestId) {
-        throw this.createError('ID_MISMATCH', 
+        throw this.createError('ID_MISMATCH',
           `Response ID ${response.id} doesn't match request ID ${requestId}`);
       }
-      
+
+      // Clean up request file after successful response
+      await fs.unlink(requestFile).catch(() => {});
+
       return response;
     } catch (error) {
+      // Clean up request file on error
+      if (requestFile) {
+        await fs.unlink(requestFile).catch(() => {});
+      }
+
       // Add request ID to error context
       if (error instanceof Error && 'code' in error) {
         (error as EfritError).request_id = requestId;

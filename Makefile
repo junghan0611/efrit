@@ -7,7 +7,7 @@ PACKAGE_NAME = efrit
 VERSION = 0.3.0
 
 # Source files
-EL_FILES = $(wildcard lisp/*.el)
+EL_FILES = $(wildcard lisp/*.el lisp/core/*.el lisp/support/*.el lisp/interfaces/*.el)
 ELC_FILES = $(EL_FILES:.el=.elc)
 
 # Test files
@@ -39,6 +39,8 @@ help:
 	@echo "  test-simple - Run basic tests only"
 	@echo "  test-loop   - Test TODO loop detection (safe)"
 	@echo "  test-integration - Run REAL integration test (⚠️  BURNS TOKENS!)"
+	@echo "  test-auto   - Run automated Tier 1 tests (⚠️  BURNS TOKENS!)"
+	@echo "  test-tier TIER=n - Run specific tier tests (⚠️  BURNS TOKENS!)"
 	@echo "  check       - Check syntax and compilation"
 	@echo ""
 	@echo "MCP Server:"
@@ -58,35 +60,68 @@ help:
 	@echo "  uninstall   - Remove from Emacs site-lisp"
 
 # Compilation
-compile: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
+compile: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc $(ELC_FILES)
 
 # Dependency hierarchy: efrit-config first, then efrit-log, efrit-common, efrit-tools, then everything else
-lisp/efrit-log.elc: lisp/efrit-config.elc
-lisp/efrit-common.elc: lisp/efrit-config.elc
-lisp/efrit-tools.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-common.elc
-lisp/efrit-debug.elc: lisp/efrit-log.elc
-lisp/efrit-chat.elc: lisp/efrit-tools.elc lisp/efrit-debug.elc lisp/efrit-common.elc
-lisp/efrit-chat-streamlined.elc: lisp/efrit-tools.elc lisp/efrit-common.elc
-lisp/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-context.elc: lisp/efrit-config.elc lisp/efrit-log.elc lisp/efrit-tools.elc
-lisp/efrit-protocol.elc: lisp/efrit-config.elc
-lisp/efrit-performance.elc: lisp/efrit-config.elc
-lisp/efrit-progress.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
-lisp/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/efrit-config.elc
-lisp/efrit-do.elc: lisp/efrit-tools.elc lisp/efrit-config.elc lisp/efrit-session-tracker.elc
-lisp/efrit-agent.elc: lisp/efrit-tools.elc lisp/efrit-log.elc lisp/efrit-common.elc
-lisp/efrit-async.elc: lisp/efrit-common.elc lisp/efrit-context.elc lisp/efrit-protocol.elc lisp/efrit-performance.elc lisp/efrit-progress.elc
-lisp/efrit-session-tracker.elc: lisp/efrit-config.elc
-lisp/efrit-dashboard.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
-lisp/efrit-command.elc: lisp/efrit-tools.elc
-lisp/efrit-autonomous-startup.elc: lisp/efrit-config.elc
-lisp/efrit.elc: lisp/efrit-config.elc lisp/efrit-tools.elc
+lisp/core/efrit-log.elc: lisp/core/efrit-config.elc
+lisp/core/efrit-common.elc: lisp/core/efrit-config.elc
+lisp/efrit-tools.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+# Core module dependencies
+lisp/core/efrit-chat.elc: lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/efrit-tools.elc lisp/interfaces/efrit-multi-turn.elc
+lisp/core/efrit-session.elc: lisp/core/efrit-config.elc lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+lisp/core/efrit-common.elc: lisp/core/efrit-log.elc
+# Support module dependencies
+lisp/support/efrit-ui.elc: lisp/core/efrit-common.elc lisp/core/efrit-log.elc
+# Interface module dependencies
+lisp/interfaces/efrit-remote-queue.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-multi-turn.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc
+lisp/interfaces/efrit-do.elc: lisp/efrit-tools.elc lisp/core/efrit-config.elc lisp/core/efrit-common.elc lisp/core/efrit-session.elc
+# Root module dependencies
+lisp/efrit-executor.elc: lisp/core/efrit-log.elc lisp/core/efrit-common.elc
+lisp/efrit.elc: lisp/core/efrit-config.elc lisp/efrit-tools.elc
 
 lisp/%.elc: lisp/%.el
 	@echo "Compiling $<..."
 	@$(EMACS_BATCH) \
 		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
 		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/core/%.elc: lisp/core/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/support/%.elc: lisp/support/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
+		-f batch-byte-compile $<
+
+lisp/interfaces/%.elc: lisp/interfaces/%.el
+	@echo "Compiling $<..."
+	@$(EMACS_BATCH) \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/core\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/support\")" \
+		--eval "(add-to-list 'load-path \"$(PWD)/lisp/interfaces\")" \
+		--eval "(setq byte-compile-error-on-warn nil)" \
+		--eval "(setq load-prefer-newer t)" \
 		-f batch-byte-compile $<
 
 # Check syntax without full compilation dependencies
@@ -134,6 +169,25 @@ test-integration: compile
 	@$(EMACS_BATCH) -L lisp -l test/test-real-integration.el
 	@echo "✅ Integration test completed"
 
+# Automated test runner (burns tokens!)
+test-auto: compile
+	@echo "⚠️  WARNING: This runs the automated test suite and BURNS TOKENS!"
+	@echo "Running automated Tier 1 tests..."
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L test \
+		--eval "(require 'efrit-test-runner)" \
+		--eval "(efrit-test-register-tier1-samples)" \
+		--eval "(efrit-test-run-tier 1)"
+	@echo "✅ Automated tests completed"
+
+test-tier: compile
+	@echo "Usage: make test-tier TIER=n (where n is 1-6)"
+	@echo "⚠️  WARNING: This BURNS TOKENS!"
+	@if [ -z "$(TIER)" ]; then echo "Error: TIER not specified"; exit 1; fi
+	@$(EMACS_BATCH) -L lisp -L lisp/core -L lisp/interfaces -L lisp/support -L test \
+		--eval "(require 'efrit-test-specs)" \
+		--eval "(efrit-test-register-all-tiers)" \
+		--eval "(efrit-test-run-tier $(TIER))"
+
 # Debug build (with extra information)
 debug:
 	@echo "Building with debug information..."
@@ -171,8 +225,8 @@ test: test-simple mcp-test
 # Cleaning
 clean: mcp-clean
 	@echo "Removing compiled files..."
-	@rm -f lisp/*.elc
-	@rm -f lisp/*.elc~
+	@rm -f lisp/*.elc lisp/core/*.elc lisp/support/*.elc lisp/interfaces/*.elc
+	@rm -f lisp/*.elc~ lisp/core/*.elc~ lisp/support/*.elc~ lisp/interfaces/*.elc~
 
 distclean: clean
 	@echo "Removing all generated files..."

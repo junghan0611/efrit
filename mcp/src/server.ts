@@ -11,6 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as fs from 'fs/promises';
+import { mkdirSync } from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
@@ -25,22 +26,41 @@ import {
   QueueStats,
   EfritError
 } from './types.js';
+import packageJson from '../package.json' with { type: 'json' };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
  * Create pino logger with appropriate configuration
+ * Logs to file to avoid polluting stdio transport used by MCP protocol
  */
-function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info'): pino.Logger {
+function createLogger(level: 'debug' | 'info' | 'warn' | 'error' = 'info', logFile?: string): pino.Logger {
+  // Default log file location if not specified
+  const defaultLogFile = path.join(process.env['HOME'] || '~', '.efrit', 'logs', 'mcp-server.log');
+  const targetLogFile = logFile || defaultLogFile;
+
+  // Ensure log directory exists
+  const logDir = path.dirname(targetLogFile);
+  try {
+    mkdirSync(logDir, { recursive: true });
+  } catch (error) {
+    // Fallback to stderr if we can't create log directory
+    // (This shouldn't happen in normal usage, but better than crashing)
+    console.error(`Warning: Could not create log directory ${logDir}, logging to stderr`);
+    return pino({ level });
+  }
+
   return pino({
     level,
     transport: {
       target: 'pino-pretty',
       options: {
-        colorize: true,
-        translateTime: 'HH:MM:ss',
-        ignore: 'pid,hostname'
+        destination: targetLogFile,
+        colorize: false,  // No colors in log files
+        translateTime: 'yyyy-mm-dd HH:MM:ss',
+        ignore: 'pid,hostname',
+        mkdir: true  // Create directory if needed
       }
     }
   });
@@ -60,7 +80,7 @@ export class EfritMcpServer {
     this.logger = createLogger('info');
     this.server = new McpServer({
       name: "efrit-mcp-server",
-      version: "1.0.0"
+      version: packageJson.version
     });
   }
 
@@ -157,14 +177,14 @@ export class EfritMcpServer {
       "efrit_execute",
       {
         title: "Execute Efrit Command",
-        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat). AI-friendly: accepts both string and number formats for timeout, ignores extra fields.",
-        inputSchema: z.object({
+        description: "Execute a command, elisp code, or chat message in an Efrit (Emacs) instance. Returns execution results. Types: 'command' (efrit-do), 'eval' (elisp evaluation), 'chat' (efrit-chat). AI-friendly: accepts both string and number formats for timeout.",
+        inputSchema: {
           type: z.enum(['command', 'eval', 'chat']).describe('Type of execution: command, eval, or chat'),
           content: z.string().describe('Command, elisp code, or chat message to execute'),
           instance_id: z.string().optional().describe('Target Efrit instance ID (uses default if not specified)'),
           return_context: z.coerce.boolean().optional().describe('Whether to return Emacs context (buffers, modes, etc.)'),
           timeout: z.coerce.number().positive().finite().optional().describe('Timeout override in seconds (accepts number or string like "30")')
-        }).passthrough()  // AI-friendly: ignore extra fields Claude might send
+        }
       },
       async (params: EfritExecuteParams) => {
         try {
@@ -230,9 +250,9 @@ export class EfritMcpServer {
       {
         title: "List Efrit Instances",
         description: "List all configured Efrit instances with their status and optional queue statistics.",
-        inputSchema: z.object({
+        inputSchema: {
           include_stats: z.coerce.boolean().optional().describe('Include queue statistics for each instance')
-        }).passthrough()  // AI-friendly: ignore extra fields
+        }
       },
       async (params: EfritListInstancesParams) => {
         try {
@@ -249,22 +269,22 @@ export class EfritMcpServer {
                 instance_id: instanceId,
                 pending_requests: stats.pending,
                 processing_requests: stats.processing,
-                completed_last_hour: 0, // Not implemented yet
-                failed_last_hour: 0, // Not implemented yet
-                avg_processing_time: 0, // Not implemented yet
+                completed_last_hour: null, // Not implemented - requires historical tracking
+                failed_last_hour: null, // Not implemented - requires historical tracking
+                avg_processing_time: null, // Not implemented - requires historical tracking
                 health: stats.pending + stats.processing > 100 ? 'degraded' : 'healthy',
-                last_activity: new Date().toISOString()
+                last_activity: null // Not implemented - requires tracking last queue activity
               };
             } else {
               queueStats = {
                 instance_id: instanceId,
                 pending_requests: 0,
                 processing_requests: 0,
-                completed_last_hour: 0,
-                failed_last_hour: 0,
-                avg_processing_time: 0,
+                completed_last_hour: null,
+                failed_last_hour: null,
+                avg_processing_time: null,
                 health: 'healthy',
-                last_activity: new Date().toISOString()
+                last_activity: null
               };
             }
 
@@ -311,9 +331,9 @@ export class EfritMcpServer {
       {
         title: "Get Queue Statistics",
         description: "Get detailed queue statistics for a specific Efrit instance.",
-        inputSchema: z.object({
+        inputSchema: {
           instance_id: z.string().optional().describe('Target instance ID (uses default if not specified)')
-        }).passthrough()  // AI-friendly: ignore extra fields
+        }
       },
       async (params: EfritGetQueueStatsParams) => {
         try {
@@ -360,10 +380,8 @@ export class EfritMcpServer {
       this.logger.info('Loading configuration...');
       this.config = await this.loadConfig(configPath);
 
-      // Update logger level and initialize concurrency limiter
-      if (this.config.log_level) {
-        this.logger = createLogger(this.config.log_level);
-      }
+      // Update logger with config values (level and file path) and initialize concurrency limiter
+      this.logger = createLogger(this.config.log_level || 'info', this.config.log_file);
       this.concurrencyLimit = pLimit(this.config.max_concurrent_requests || 10);
 
       this.logger.info(`Configuration loaded: ${Object.keys(this.config.instances).length} instance(s) configured`);
@@ -407,6 +425,39 @@ export class EfritMcpServer {
     this.logger.info('Shutdown complete');
     process.exit(0);
   }
+
+  /**
+   * Reload configuration and reinitialize clients
+   */
+  async reload(): Promise<void> {
+    this.logger.info('Reloading Efrit MCP Server configuration...');
+
+    try {
+      // Clean up existing clients
+      for (const [instanceId, client] of this.clients.entries()) {
+        try {
+          await client.cleanup();
+          this.logger.debug(`Cleaned up client for instance: ${instanceId}`);
+        } catch (error) {
+          this.logger.warn(`Failed to cleanup instance ${instanceId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      this.clients.clear();
+
+      // Reload configuration
+      this.config = await this.loadConfig();
+      this.logger.info('Configuration reloaded successfully');
+
+      // Reinitialize clients
+      await this.initializeClients();
+      this.logger.info('Clients reinitialized successfully');
+
+      this.logger.info('Reload complete');
+    } catch (error) {
+      this.logger.error(`Failed to reload configuration: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn('Continuing with previous configuration');
+    }
+  }
 }
 
 /**
@@ -418,6 +469,9 @@ async function main() {
   // Handle graceful shutdown
   process.on('SIGINT', () => server.shutdown());
   process.on('SIGTERM', () => server.shutdown());
+
+  // Handle configuration reload
+  process.on('SIGHUP', () => server.reload());
 
   // Start the server
   await server.start();

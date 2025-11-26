@@ -3,6 +3,8 @@
  * Incorporates Oracle recommendations: versioning, security, namespacing
  */
 
+import packageJson from '../package.json' with { type: 'json' };
+
 /**
  * Request types supported by Efrit
  */
@@ -158,19 +160,13 @@ export interface McpServerConfig {
   
   /** Log level */
   log_level?: LogLevel;
-  
+
+  /** Log file path (defaults to ~/.efrit/logs/mcp-server.log if not specified) */
+  log_file?: string;
+
   /** Server port (if running HTTP endpoint for health checks) */
   port?: number;
-  
-  /** Rate limiting configuration */
-  rate_limit?: {
-    /** Requests per minute per client */
-    requests_per_minute: number;
-    
-    /** Burst allowance */
-    burst_size: number;
-  };
-  
+
   /** Security configuration */
   security?: {
     /** Maximum request size in bytes */
@@ -264,27 +260,27 @@ export interface EfritStopInstanceParams {
 export interface QueueStats {
   /** Instance ID */
   instance_id: string;
-  
+
   /** Number of pending requests */
   pending_requests: number;
-  
+
   /** Number of requests being processed */
   processing_requests: number;
-  
-  /** Number of completed requests in last hour */
-  completed_last_hour: number;
-  
-  /** Number of failed requests in last hour */
-  failed_last_hour: number;
-  
-  /** Average processing time in seconds */
-  avg_processing_time: number;
-  
+
+  /** Number of completed requests in last hour (null if not implemented) */
+  completed_last_hour: number | null;
+
+  /** Number of failed requests in last hour (null if not implemented) */
+  failed_last_hour: number | null;
+
+  /** Average processing time in seconds (null if not implemented) */
+  avg_processing_time: number | null;
+
   /** Queue health status */
   health: 'healthy' | 'degraded' | 'failed';
-  
-  /** Last activity timestamp */
-  last_activity: string;
+
+  /** Last activity timestamp (null if not implemented) */
+  last_activity: string | null;
 }
 
 /**
@@ -327,20 +323,9 @@ export interface EfritError extends Error {
 /**
  * Constants
  */
-export const EFRIT_SCHEMA_VERSION = '1.0.0';
+export const EFRIT_SCHEMA_VERSION = packageJson.version;
 export const DEFAULT_TIMEOUT = 30;
 export const DEFAULT_POLL_INTERVAL = 250;
 export const MAX_REQUEST_SIZE = 1024 * 1024; // 1MB
 export const MAX_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB
 export const QUEUE_SUBDIRS = ['requests', 'processing', 'responses', 'archive'] as const;
-
-/**
- * MCP tool names (namespaced per Oracle recommendation)
- */
-export const MCP_TOOLS = {
-  EXECUTE: 'mcp/efrit_execute',
-  LIST_INSTANCES: 'mcp/efrit_list_instances', 
-  GET_QUEUE_STATS: 'mcp/efrit_get_queue_stats',
-  START_INSTANCE: 'mcp/efrit_start_instance',
-  STOP_INSTANCE: 'mcp/efrit_stop_instance'
-} as const;

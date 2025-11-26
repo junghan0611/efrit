@@ -84,12 +84,208 @@ bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
 
 ## Development Guidelines
 
+### MANDATORY VERIFICATION RULE
+
+**🚨 CRITICAL - READ THIS FIRST 🚨**
+
+**YOU MUST VERIFY ALL CHANGES BEFORE REPORTING COMPLETION TO THE USER.**
+
+This is non-negotiable. The user has spent significant time in the past finding bugs that you claimed were fixed but weren't actually tested. This wastes the user's time and is unacceptable.
+
+**What "verification" means:**
+1. **For code changes**: Run the actual code in Emacs (batch mode or daemon) and verify it executes without errors
+2. **For API-related changes**: Make actual API calls or simulate the full request/response cycle
+3. **For bug fixes**: Reproduce the original error, apply your fix, verify the error is gone
+4. **For new features**: Execute the feature end-to-end and confirm it works
+
+**Acceptable verification methods:**
+- ✅ `emacs --batch` with actual execution of the changed code
+- ✅ Starting Emacs daemon and testing via remote queue
+- ✅ Running `make compile` and checking for errors (for compilation issues only)
+- ✅ Executing the actual command/function and showing output
+- ✅ **FOR EFRIT SPECIFICALLY**: Real API calls with actual token usage (see below)
+
+**UNACCEPTABLE - these do NOT count as verification:**
+- ❌ "The code looks correct"
+- ❌ "This should work"
+- ❌ "The function is now available" (without actually calling it)
+- ❌ Reading the code and assuming it works
+- ❌ Compilation success alone (unless the issue was a compilation error)
+- ❌ **Mock tests or integration harnesses that don't use the real product**
+
+**When reporting to user:**
+- Include actual command output showing the verification
+- Show before/after behavior if fixing a bug
+- Demonstrate the feature working, don't just claim it does
+
+**If you cannot verify:**
+- State clearly: "I cannot verify this works because [reason]"
+- Explain what manual verification steps the user should take
+- DO NOT claim something works if you haven't verified it
+
+### EFRIT-SPECIFIC: Token-Burning Validation
+
+**🔥 CRITICAL FOR EFRIT TESTING 🔥**
+
+**Efrit is a Claude-powered tool, and you ARE Claude. Both you and efrit burn tokens.**
+
+**Therefore: There is NO REASON to avoid token-burning tests.**
+
+When testing efrit-chat, efrit-do, or any feature that uses the Claude API:
+
+**REQUIRED:**
+- ✅ Make REAL API calls using `emacs --script` with actual efrit-chat/efrit-do commands
+- ✅ Burn tokens to verify the actual user experience
+- ✅ Test the complete request/response cycle with real API responses
+- ✅ Verify what the user actually sees in the buffer
+
+**FORBIDDEN:**
+- ❌ Mock API responses or use test harnesses
+- ❌ "Integration tests" that don't use the real product
+- ❌ Simulating what "should" happen without seeing it happen
+
+**Example of proper efrit-chat verification:**
+```bash
+cat > /tmp/test.el << 'EOF'
+(require 'efrit-chat)
+(efrit-chat)
+(efrit-send-message "your test request")
+;; Wait for response, check buffer contents
+EOF
+
+emacs --script /tmp/test.el
+```
+
+**Why this matters:**
+- You're already burning tokens to respond to the user
+- Efrit burns tokens to do its work
+- The marginal cost of verification is minimal
+- The cost of shipping broken code is HIGH (user's time wasted debugging)
+
+**Don't be shy about using the API for testing. Burn those tokens. Verify that shit works.**
+
 ### Before Making Changes
 
 1. **Read the architecture**: [ARCHITECTURE.md](ARCHITECTURE.md) - understand Pure Executor principle
 2. **Check for existing issues**: `bd list --json | grep -i "your topic"`
 3. **Create an issue if needed**: `bd create "Your task" -t task -p 2 --json`
 4. **Claim the issue**: `bd update <id> --status in_progress`
+
+### The Toolchest: Choosing the Right Approach
+
+As an AI agent working on Efrit, you have three primary ways to interact with the system. **Choose the right tool for the task:**
+
+#### 1. Direct File Access (Read/Edit/Write tools)
+**Use for:** Modifying source code, documentation, configuration files
+
+**When:**
+- Editing `.el` files in `lisp/`
+- Updating documentation (`.md` files)
+- Reading source code to understand implementation
+- Making any changes to the codebase itself
+
+**Example:**
+```
+Read lisp/efrit-do.el
+Edit lisp/efrit-do.el (modify specific function)
+Write test/new-test.el (create new file)
+```
+
+**Why:** Most direct, efficient for code changes, no indirection
+
+#### 2. Bash + Batch Emacs
+**Use for:** Compilation, unit tests, one-off elisp evaluation
+
+**When:**
+- Compiling elisp files (`make compile`)
+- Running ERT unit tests
+- Quick elisp evaluation to check behavior
+- Verifying code compiles without errors
+
+**Example:**
+```bash
+# Compile all elisp files
+make compile
+
+# Run specific test file
+emacs --batch -L lisp -l test/test-remote-queue-validation.el -f ert-run-tests-batch-and-exit
+
+# Quick elisp evaluation
+emacs --batch --eval "(progn (require 'json) (print (json-encode '((a . 1)))))"
+```
+
+**Why:** Fast, synchronous, familiar Unix pipeline model, good for CI/CD
+
+#### 3. Remote Queue System (AI-to-AI Communication)
+**Use for:** Integration testing, protocol validation, end-to-end testing
+
+**When:**
+- Testing changes to `efrit-remote-queue.el`
+- Validating request/response protocol (version, status, etc.)
+- Testing multi-turn interactions
+- Simulating real AI-to-AI communication scenarios
+- Verifying MCP integration works correctly
+
+**Example:**
+```bash
+# 1. Start Efrit daemon (if not already running)
+emacs --daemon=efrit-test --load lisp/dev/efrit-autonomous-startup.el
+
+# 2. Send a test request
+cat > ~/.emacs.d/.efrit/queues/requests/test_$(date +%s).json <<EOF
+{
+  "id": "test-validation-$(date +%s)",
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(+ 1 2)",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# 3. Wait briefly for processing
+sleep 0.5
+
+# 4. Check the response
+ls -ltr ~/.emacs.d/.efrit/queues/responses/ | tail -1
+cat ~/.emacs.d/.efrit/queues/responses/resp_test-*.json
+
+# 5. Verify response has correct structure (version, status, result, timestamp)
+```
+
+**Why:** Tests the complete request/response cycle, validates protocol compatibility, catches integration issues that unit tests miss
+
+**Queue directories:**
+- `~/.emacs.d/.efrit/queues/requests/` - Your JSON requests go here
+- `~/.emacs.d/.efrit/queues/processing/` - Currently being processed
+- `~/.emacs.d/.efrit/queues/responses/` - Completed responses appear here
+- `~/.emacs.d/.efrit/queues/archive/` - Historical data
+
+#### Decision Matrix
+
+| Task | Tool | Example |
+|------|------|---------|
+| Edit source code | Direct file access | `Edit lisp/efrit-do.el` |
+| Compile code | Bash | `make compile` |
+| Run unit tests | Bash + batch | `emacs --batch -l test/foo.el -f ert...` |
+| Test protocol changes | Remote queue | Send JSON to `queues/requests/`, read `queues/responses/` |
+| Validate request/response format | Remote queue | Check version/status fields in actual responses |
+| Test multi-turn interaction | Remote queue | Send multiple sequential requests |
+| Quick elisp check | Bash + batch | `emacs --batch --eval "(+ 1 2)"` |
+
+#### Recommended Workflow
+
+**When making changes to Efrit:**
+1. **Edit code** using direct file access (Read/Edit/Write)
+2. **Compile** using `make compile` (Bash)
+3. **Unit test** using `emacs --batch` (Bash)
+4. **Integration test** using remote queue (if protocol-related changes)
+5. **Commit** using git (Bash)
+
+**When you modify `efrit-remote-queue.el` or protocol-related code:**
+- ALWAYS validate with the remote queue system
+- This ensures request/response format is correct
+- Catches version compatibility issues, status enum problems, etc.
+- Unit tests alone won't catch protocol integration bugs
 
 ### Code Standards
 
@@ -98,21 +294,6 @@ bd ready --json | jq -r '.[] | "[\(.priority)] \(.id): \(.title)"'
 - **Documentation**: Docstrings required for all functions
 - **NO client-side intelligence**: If you add pattern matching or decision logic, you've violated the architecture
 - **File locations**: All source code in `lisp/`, tests in `test/`, docs in `docs/`
-
-### Testing
-
-```bash
-# Compile all elisp files
-make compile
-
-# Run tests (when fixed - see mcp-fmw)
-make test
-
-# Run specific test file
-emacs --batch -L lisp -l test/test-file.el -f ert-run-tests-batch-and-exit
-```
-
-**IMPORTANT**: Test infrastructure is currently broken. See issue `mcp-fmw` for details.
 
 ### Common Tasks
 
@@ -150,6 +331,29 @@ bd create "Bug discovered" -t bug -p 1 --deps discovered-from:<parent-id> --json
 make compile  # Byte-compile elisp
 make test     # Run tests (when working)
 # File P0 issues if builds are broken
+```
+
+**Optional: Queue-based validation** (if you modified protocol-related code):
+```bash
+# If you changed efrit-remote-queue.el, MCP, or protocol code:
+# 1. Start daemon if needed
+emacs --daemon=efrit-test --load lisp/dev/efrit-autonomous-startup.el
+
+# 2. Send validation request
+cat > ~/.emacs.d/.efrit/queues/requests/final_check_$(date +%s).json <<EOF
+{
+  "id": "final-validation-$(date +%s)",
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(message \"Protocol validation OK\")",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+# 3. Verify response structure is correct
+sleep 0.5
+cat ~/.emacs.d/.efrit/queues/responses/resp_final-*.json | jq '.'
+# Check: version, status, result, timestamp fields present and valid
 ```
 
 ### 3. Update Beads Issues

@@ -66,11 +66,29 @@ Efrit provides multiple interfaces for AI-powered Emacs development:
 2. **Add to your Emacs configuration** (`~/.emacs.d/init.el`):
    ```elisp
    (add-to-list 'load-path "/path/to/efrit/lisp")
+   (add-to-list 'load-path "/path/to/efrit/lisp/core")
+   (add-to-list 'load-path "/path/to/efrit/lisp/support")
+   (add-to-list 'load-path "/path/to/efrit/lisp/interfaces")
    (require 'efrit)
    ```
 
-3. **Configure your API key** in `~/.authinfo`:
+3. **Configure your API key** (choose one method):
+
+   **Option A: Encrypted authinfo (most secure, recommended)**:
    ```
+   # Create ~/.authinfo.gpg (GPG-encrypted)
+   machine api.anthropic.com login personal password YOUR_API_KEY_HERE
+   ```
+   Save with GPG encryption. Emacs will prompt for passphrase on first use.
+
+   **Option B: Environment variable**:
+   ```bash
+   export ANTHROPIC_API_KEY="sk-your-key-here"
+   ```
+
+   **Option C: Plain authinfo (less secure)**:
+   ```
+   # Create ~/.authinfo (unencrypted)
    machine api.anthropic.com login personal password YOUR_API_KEY_HERE
    ```
 
@@ -82,7 +100,8 @@ Efrit is structured for lazy loading with `use-package`. Example setup using a l
 
 ```elisp
 (use-package efrit
-  :straight (:type git :host github :repo "steveyegge/efrit" :files ("lisp/*.el"))
+  :straight (:type git :host github :repo "steveyegge/efrit"
+             :files ("lisp/*.el" "lisp/core/*.el" "lisp/support/*.el" "lisp/interfaces/*.el"))
   :init
   ;; Set data directory before loading to avoid side effects
   (setq efrit-data-directory (expand-file-name "~/efrit-data"))
@@ -132,12 +151,31 @@ Or, if you vendored Efrit locally:
 ;; Environment variable (recommended)
 (setq efrit-api-key 'ANTHROPIC_API_KEY)
 
-;; Custom function
+;; Custom function (e.g., for platform keychain integration)
 (setq efrit-api-key (lambda () (get-secret-from-vault "anthropic-key")))
 
 ;; Direct string (NOT recommended - security risk)
 (setq efrit-api-key "sk-your-key-here")
 ```
+
+**Platform-Specific Secure Storage**:
+
+Efrit's `auth-source` integration automatically supports platform-specific secure storage:
+
+- **macOS**: Use `~/.authinfo.gpg` (GPG-encrypted) or macOS Keychain via `auth-source-macos-keychain`
+- **Linux**: Use `~/.authinfo.gpg` (GPG-encrypted) or Secret Service API via `auth-source-secrets`
+- **Windows**: Use `~/.authinfo.gpg` (GPG-encrypted) with GPG for Windows
+
+**GPG Setup Example**:
+```bash
+# Create encrypted authinfo
+gpg --gen-key  # Generate GPG key if needed
+echo "machine api.anthropic.com login personal password sk-your-key" > ~/.authinfo
+gpg -c ~/.authinfo  # Encrypts to ~/.authinfo.gpg
+rm ~/.authinfo  # Remove plaintext version
+```
+
+Emacs will automatically detect and use `~/.authinfo.gpg` when available.
 
 ### Data Directory
 
@@ -226,27 +264,59 @@ This demonstrates efrit's ability to handle complex, multi-part requests through
 
 ### 🆕 Agent Communication (AI → Efrit)
 
-AI agents write JSON requests to the queue directory:
+AI agents write JSON requests to the queue directory. Three request types are supported:
 
+#### Request Types
+
+**1. `eval` - Evaluate Elisp expressions**
 ```json
 {
   "id": "req_001",
-  "type": "eval", 
-  "content": "(+ 40 2)"
+  "version": "1.0.0",
+  "type": "eval",
+  "content": "(+ 40 2)",
+  "timestamp": "2025-11-23T20:00:00Z"
 }
 ```
 
-Efrit processes and responds with JSON results:
+**2. `command` - Execute natural language commands via efrit-do**
+```json
+{
+  "id": "req_002",
+  "version": "1.0.0",
+  "type": "command",
+  "content": "create a new buffer called test.txt",
+  "timestamp": "2025-11-23T20:00:00Z"
+}
+```
+
+**3. `chat` - Send messages to Claude via streamlined chat**
+```json
+{
+  "id": "req_003",
+  "version": "1.0.0",
+  "type": "chat",
+  "content": "What is the capital of France?",
+  "timestamp": "2025-11-23T20:00:00Z"
+}
+```
+
+#### Response Format
+
+Efrit processes requests and responds with JSON results:
 
 ```json
 {
   "id": "req_001",
+  "version": "1.0.0",
   "status": "success",
-  "result": "42"
+  "result": "42",
+  "timestamp": "2025-11-23T20:00:01Z",
+  "execution_time": 0.002
 }
 ```
 
-See [`QUEUE_USAGE_EXAMPLE.md`](QUEUE_USAGE_EXAMPLE.md) for detailed integration examples.
+Response status values: `success`, `error`, `timeout`
 
 ### Examples
 
