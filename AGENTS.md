@@ -31,14 +31,18 @@ Do NOT batch multiple fixes. Do NOT wait until "end of session". Push immediatel
 
 ## Issue Tracking with Beads
 
-This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs or other tracking methods.
+This project uses **br (beads_rust)** for ALL issue tracking. Do NOT use markdown TODOs or other tracking methods.
+
+**Note:** `br` is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
 
 ```bash
-bd ready                              # Find unblocked work
-bd create "Title" -t bug|feature|task -p 0-4
-bd update <id> --status in_progress
-bd close <id> --reason "Done"
-bd sync                               # Export to JSONL (auto-commits)
+br ready                              # Find unblocked work
+br create "Title" -t bug|feature|task -p 0-4
+br update <id> --status in_progress
+br close <id> --reason "Done"
+br sync --flush-only                  # Export to JSONL (no git)
+git add .beads/
+git commit -m "sync beads"
 ```
 
 **Issue Types**: bug, feature, task, epic, chore  
@@ -47,13 +51,13 @@ bd sync                               # Export to JSONL (auto-commits)
 ## Development Workflow
 
 ### Before Making Changes
-1. Check ready work: `bd ready`
-2. Claim task: `bd update <id> --status in_progress`
+1. Check ready work: `br ready`
+2. Claim task: `br update <id> --status in_progress`
 
 ### After Each Fix
 1. Compile: `make compile`
 2. Commit and push immediately
-3. Close issue: `bd close <id> --reason "Done"`
+3. Close issue: `br close <id> --reason "Done"`
 
 ### Verification Requirements
 
@@ -116,11 +120,11 @@ efrit/
 3. Add dispatch entry in `lisp/interfaces/efrit-do.el`
 
 **Fixing a bug**:
-1. `bd create "Bug: description" -t bug -p 1`
+1. `br create "Bug: description" -t bug -p 1`
 2. Fix the bug
 3. `make compile`
 4. Commit and push
-5. `bd close <id> --reason "Fixed"`
+5. `br close <id> --reason "Fixed"`
 
 ### Planning Work with Dependencies
 
@@ -129,10 +133,10 @@ When breaking down large features into tasks, use **beads dependencies** to sequ
 **⚠️ COGNITIVE TRAP: Temporal Language Inverts Dependencies**
 
 Words like "Phase 1", "Step 1", "first", "before" trigger temporal reasoning that **flips dependency direction**. Your brain thinks:
-- "Phase 1 comes before Phase 2" → "Phase 1 blocks Phase 2" → `bd dep add phase1 phase2`
+- "Phase 1 comes before Phase 2" → "Phase 1 blocks Phase 2" → `br dep add phase1 phase2`
 
 But that's **backwards**! The correct mental model:
-- "Phase 2 **depends on** Phase 1" → `bd dep add phase2 phase1`
+- "Phase 2 **depends on** Phase 1" → `br dep add phase2 phase1`
 
 **Solution: Use requirement language, not temporal language**
 
@@ -140,33 +144,33 @@ Instead of phases, name tasks by what they ARE, and think about what they NEED:
 
 ```bash
 # ❌ WRONG - temporal thinking leads to inverted deps
-bd create "Phase 1: Create buffer layout" ...
-bd create "Phase 2: Add message rendering" ...
-bd dep add phase1 phase2  # WRONG! Says phase1 depends on phase2
+br create "Phase 1: Create buffer layout" ...
+br create "Phase 2: Add message rendering" ...
+br dep add phase1 phase2  # WRONG! Says phase1 depends on phase2
 
 # ✅ RIGHT - requirement thinking
-bd create "Create buffer layout" ...
-bd create "Add message rendering" ...
-bd dep add msg-rendering buffer-layout  # msg-rendering NEEDS buffer-layout
+br create "Create buffer layout" ...
+br create "Add message rendering" ...
+br dep add msg-rendering buffer-layout  # msg-rendering NEEDS buffer-layout
 ```
 
-**Verification**: After adding deps, run `bd blocked` - tasks should be blocked by their prerequisites, not their dependents.
+**Verification**: After adding deps, run `br blocked` - tasks should be blocked by their prerequisites, not their dependents.
 
 **Example breakdown** (for a multi-part feature):
 ```bash
 # Create tasks named by what they do, not what order they're in
-bd create "Implement conversation region" -t task -p 1
-bd create "Add header-line status display" -t task -p 1
-bd create "Render tool calls inline" -t task -p 2
-bd create "Add streaming content support" -t task -p 2
+br create "Implement conversation region" -t task -p 1
+br create "Add header-line status display" -t task -p 1
+br create "Render tool calls inline" -t task -p 2
+br create "Add streaming content support" -t task -p 2
 
 # Set up dependencies: X depends on Y means "X needs Y first"
-bd dep add header-line conversation-region    # header needs region
-bd dep add tool-calls conversation-region     # tools need region
-bd dep add streaming tool-calls               # streaming needs tools
+br dep add header-line conversation-region    # header needs region
+br dep add tool-calls conversation-region     # tools need region
+br dep add streaming tool-calls               # streaming needs tools
 
-# Verify with bd blocked - should show sensible blocking
-bd blocked
+# Verify with br blocked - should show sensible blocking
+br blocked
 ```
 
 ## Testing
@@ -186,7 +190,7 @@ emacs --batch --eval "(progn (require 'efrit) (message \"OK\"))"
 
 ### ✅ DO:
 - Commit and push after EVERY fix
-- Use bd for all task tracking
+- Use br for all task tracking
 - Verify changes compile before reporting done
 - Keep changes minimal and focused
 
